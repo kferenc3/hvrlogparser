@@ -1,5 +1,5 @@
 use clap::{Parser};
-use std::{fs::{self, OpenOptions}, process};
+use std::{fs::{self, OpenOptions}};
 use chrono::{DateTime, Utc, Duration, NaiveDateTime};
 
 #[derive(Parser, Default, Debug)]
@@ -226,20 +226,31 @@ fn dateparser(lines: &mut std::slice::Iter<u8>, filebase: &str, begin: &str, end
             None => b"asd"
         };
 
-        let ts_str = match std::str::from_utf8(l_part) {
-            Ok(s) => s,
-            Err(_) => "a",
-        };
+        let ts_str = std::str::from_utf8(l_part).unwrap_or("a");
 
         let line_ts = match DateTime::parse_from_str(ts_str, "%Y-%m-%dT%H:%M:%S%:z") {
                 Ok(res) => Some(res.naive_utc()),
                 Err(_) => None,
             };
         //Set the minimum timestamp to the first valid timestamp in the file
-        if min_ts == DateTime::<Utc>::MIN_UTC.naive_utc() && !line_ts.is_none() {
-            min_ts = line_ts.unwrap();
-            break
+        if min_ts == DateTime::<Utc>::MIN_UTC.naive_utc() {
+            min_ts = line_ts.unwrap_or(DateTime::<Utc>::MIN_UTC.naive_utc());
         }
+        //if line_ts.is_some() {
+            //min_ts = std::cmp::max(line_ts.u)
+        //}
+        
+
+        // let min_ts = match line_ts {
+        //     Some(t) => {
+        //         if min_ts == DateTime::<Utc>::MIN_UTC.naive_utc(){
+        //             min_ts = t;
+        //             break
+        //         }
+        //     },
+        //     None => 
+            
+        // }
     }
 
     let mut boundary = Boundary {
@@ -251,7 +262,7 @@ fn dateparser(lines: &mut std::slice::Iter<u8>, filebase: &str, begin: &str, end
 
     while let Some(b) = lines.next() {
         
-        let filename = format!("{filebase}{}.out", boundary.upper.format("%Y%m%d%H%M%S").to_string());
+        let filename = format!("{filebase}{}.out", boundary.upper.format("%Y%m%d%H%M%S"));
         let mut l: Vec<u8> = vec![*b];
         //getting an entire line
         loop {
@@ -271,10 +282,7 @@ fn dateparser(lines: &mut std::slice::Iter<u8>, filebase: &str, begin: &str, end
             None => b"asd"
         };
 
-        let ts_str = match std::str::from_utf8(l_part) {
-            Ok(s) => s,
-            Err(_) => "a",
-        };
+        let ts_str = std::str::from_utf8(l_part).unwrap_or("a");
 
         let line_ts = match DateTime::parse_from_str(ts_str, "%Y-%m-%dT%H:%M:%S%:z") {
                 Ok(res) => Some(res.naive_utc()),
@@ -305,7 +313,7 @@ fn dateparser(lines: &mut std::slice::Iter<u8>, filebase: &str, begin: &str, end
         }
     }
     if !content.is_empty() {
-        let filename = format!("{filebase}{}.out", boundary.upper.format("%Y%m%d%H%M%S").to_string());
+        let filename = format!("{filebase}{}.out", boundary.upper.format("%Y%m%d%H%M%S"));
         filewriter(filename.as_str(), &content).expect("Error while writing to files");
     };
 
