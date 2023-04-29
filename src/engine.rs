@@ -1,5 +1,6 @@
 use clap::{Parser};
-use std::fs::{self, OpenOptions};
+use std::{fs::{self, OpenOptions}, process};
+use chrono::{DateTime, Utc, Duration, NaiveDateTime};
 
 #[derive(Parser, Default, Debug)]
 #[command(about="Parser for HVR generated logfiles")]
@@ -15,11 +16,11 @@ pub struct Config {
     ///Required if the method is date
     granularity: String,
     
-    #[arg(short, long, hide_default_value(true), default_value_t = String::from("2020-01-01T00:00:00+00:00"))]
+    #[arg(short, long, hide_default_value(true), default_value_t = String::from("1990-01-01T00:00:00+00:00"))] //the real default min is DateTime::MIN_UTC. This is just a placeholder
     ///Specify from where lines should be extracted (format: YYYY-mm-ddTHH:mm:SS+00:00). The default is the beginning of the file.
     begin_time: String,
     
-    #[arg(short, long, hide_default_value(true), default_value_t = String::from("2030-01-01T00:00:00+00:00"))]
+    #[arg(short, long, hide_default_value(true), default_value_t = String::from("2100-01-01T00:00:00+00:00"))] //the real default max is DateTime::MAX_UTC. This is just a placeholder
     ///Specify until where lines should be extracted (format: YYYY-mm-ddTHH:mm:SS+00:00). The default is the end of the file.
     end_time: String,
     
@@ -53,8 +54,16 @@ pub fn runner (config: Config) {
             config.lower_bound, 
             config.upper_bound, 
             config.chunk_size,
-            config.method.as_str());},
-        _ => println!("Method not implemented yet"),
+            config.method.as_str());
+        },
+        "date" => {
+            dateparser(&mut input.iter(),
+            config.file_basename.as_str(),
+            config.begin_time.as_str(),
+            config.end_time.as_str(),
+            config.granularity.as_str())
+                },
+        _ => println!("Method invalid or not implemented yet"),
     }
 }
 
@@ -151,6 +160,155 @@ fn linebyte_split(lines: &mut std::slice::Iter<u8>, filebase: &str, lbound: u64,
 
         };
     }
+}
+
+#[derive(Debug)]
+struct Boundary {
+    lower: NaiveDateTime,
+    upper: NaiveDateTime,
+}
+
+fn dateparser(lines: &mut std::slice::Iter<u8>, filebase: &str, begin: &str, end: &str, gran: &str) {
+    //parse the line and store it in a temp_line_store
+    //check if the line has a valid timestamps
+    //if it does that should be the min_ts
+    let granularity = match gran {
+        "minute" => 1,
+        "hour" => 60,
+        "day" => 60 * 24,
+        "month" => 60 * 24 * (365/12),
+        _ => 60,
+    };
+    
+    let mut min_ts = match begin {
+        "1990-01-01T00:00:00+00:00" => DateTime::<Utc>::MIN_UTC.naive_utc(),
+        _ => match DateTime::parse_from_str(begin, "%Y-%m-%dT%H:%M:%S%:z") {
+                Ok(d) => d.naive_utc(),
+                Err(_) => {
+                    eprintln!("Problem parsing begin_time. Using default date instead. format: YYYY-mm-ddTHH:mm:SS+00:00");
+                    DateTime::<Utc>::MIN_UTC.naive_utc()},
+            },
+    };
+    let max_ts = match end {
+        "2100-01-01T00:00:00+00:00" => DateTime::<Utc>::MAX_UTC.naive_utc(),
+        _ => match DateTime::parse_from_str(end, "%Y-%m-%dT%H:%M:%S%:z") {
+                Ok(d) => d.naive_utc(),
+                Err(_) => 
+                    {eprintln!("Problem parsing end_time. Using default date instead. format: YYYY-mm-ddTHH:mm:SS+00:00");
+                    DateTime::<Utc>::MAX_UTC.naive_utc()},
+                }
+    };
+
+    //looping until there are bytes in the input
+    let mut content: Vec<u8> = vec![];
+    
+    //first loop is to make sure we have the minimum timestamp from the log and then generate the boundaries up until max_ts
+    let mut l_temp = lines.clone();
+    while let Some(b) = l_temp.next() {
+        
+        let mut l: Vec<u8> = vec![*b];
+        //getting an entire line
+        loop {
+            match l_temp.next() {
+            Some(&10) => {l.extend_from_slice(&[10]);
+                        break},
+            Some(s) => {
+                l.extend_from_slice(&[*s]);
+            },
+            _ => {
+                break},
+            };
+        }
+        
+        //parsing out the timestamp from the line
+        let l_part = match &l.get(..25) {
+            Some(t) => *t,
+            None => b"asd"
+        };
+
+        let ts_str = match std::str::from_utf8(l_part) {
+            Ok(s) => s,
+            Err(_) => "a",
+        };
+
+        let line_ts = match DateTime::parse_from_str(ts_str, "%Y-%m-%dT%H:%M:%S%:z") {
+                Ok(res) => Some(res.naive_utc()),
+                Err(_) => None,
+            };
+        //Set the minimum timestamp to the first valid timestamp in the file
+        if min_ts == DateTime::<Utc>::MIN_UTC.naive_utc() && !line_ts.is_none() {
+            min_ts = line_ts.unwrap();
+            break
+        }
+    }
+
+    let mut boundary = Boundary {
+        lower: min_ts,
+        upper: min_ts + Duration::seconds(granularity * 60)
+    };
+
+    println!("{:?}", boundary);
+
+    while let Some(b) = lines.next() {
+        
+        let filename = format!("{filebase}{}.out", boundary.upper.format("%Y%m%d%H%M%S").to_string());
+        let mut l: Vec<u8> = vec![*b];
+        //getting an entire line
+        loop {
+            match lines.next() {
+            Some(&10) => {l.extend_from_slice(&[10]);
+                        break},
+            Some(s) => {
+                l.extend_from_slice(&[*s]);
+            },
+            _ => {
+                break},
+            };
+        }
+
+        let l_part = match &l.get(..25) {
+            Some(t) => *t,
+            None => b"asd"
+        };
+
+        let ts_str = match std::str::from_utf8(l_part) {
+            Ok(s) => s,
+            Err(_) => "a",
+        };
+
+        let line_ts = match DateTime::parse_from_str(ts_str, "%Y-%m-%dT%H:%M:%S%:z") {
+                Ok(res) => Some(res.naive_utc()),
+                Err(_) => None,
+            };
+        
+        //2023-04-03T16:10:17+00:00
+        //2023-04-03T17:20:12+00:00
+        match line_ts {
+            None => content.append(&mut l),
+            Some(ts) => {
+                if ts >= boundary.lower && ts < boundary.upper {
+                    content.append(&mut l);
+                } else if ts >= boundary.upper && ts < max_ts {
+                    filewriter(filename.as_str(), &content).expect("Error while writing to files");
+                    content.clear();
+                    content.append(&mut l);
+                    boundary = Boundary {
+                        lower: boundary.upper,
+                        upper: boundary.upper + Duration::seconds(granularity * 60),
+                    }
+                } else if ts > max_ts {
+                    filewriter(filename.as_str(), &content).expect("Error while writing to files");
+                    content.clear();
+                    break;
+                }
+            }
+        }
+    }
+    if !content.is_empty() {
+        let filename = format!("{filebase}{}.out", boundary.upper.format("%Y%m%d%H%M%S").to_string());
+        filewriter(filename.as_str(), &content).expect("Error while writing to files");
+    };
+
 }
 
 fn filewriter (f: &str, c: &[u8]) -> Result<(), String>{
