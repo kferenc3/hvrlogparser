@@ -105,20 +105,7 @@ fn linebyte_split(lines: &mut std::slice::Iter<u8>, filebase: &str, lbound: u64,
         match m {
             "lines" => {
                 //line
-                loop {
-                    match lines.next() {
-                        Some(&10) => {
-                            content.extend_from_slice(&[10]);
-                            break
-                        },
-                        Some(s) => {
-                            content.extend_from_slice(&[*s]);
-                        },
-                        _ => {
-                            filewriter(filename.as_str(), &content).expect("Error while writing to files");
-                            break},
-                    }
-                }
+                content.extend_from_slice(&lineloop(lines));
             },
             "bytes" => {
                     //byte
@@ -138,25 +125,16 @@ fn linebyte_split(lines: &mut std::slice::Iter<u8>, filebase: &str, lbound: u64,
         if content_size == size || x == ubound {
             //the additional looping is needed for the byte method so the current row is written to the file in full and not cut in half
             if m == "bytes" {
-                loop {
-                    match lines.next() {
-                    Some(&10) => {content.extend_from_slice(&[10]);
-                                break},
-                    Some(s) => {
-                        content.extend_from_slice(&[*s]);
-                    },
-                    _ => {
-                        filewriter(filename.as_str(), &content).expect("Error while writing to files");
-                        break},
-                    }
-                }
+                content.extend_from_slice(&lineloop(lines));
             }
-
+            if content.is_empty() {
+                break
+            };
             filewriter(filename.as_str(), &content).expect("Error while writing to files");
             fileid += 1;
             content_size = 0;
             filename = format!("{filebase}{fileid}.out",);
-            content = vec![];
+            content.clear();
 
         };
     }
@@ -205,52 +183,21 @@ fn dateparser(lines: &mut std::slice::Iter<u8>, filebase: &str, begin: &str, end
     //first loop is to make sure we have the minimum timestamp from the log and then generate the boundaries up until max_ts
     let mut l_temp = lines.clone();
     while let Some(b) = l_temp.next() {
-        
         let mut l: Vec<u8> = vec![*b];
         //getting an entire line
-        loop {
-            match l_temp.next() {
-            Some(&10) => {l.extend_from_slice(&[10]);
-                        break},
-            Some(s) => {
-                l.extend_from_slice(&[*s]);
-            },
-            _ => {
-                break},
-            };
-        }
+        
+        l.extend_from_slice(&lineloop(&mut l_temp));
         
         //parsing out the timestamp from the line
-        let l_part = match &l.get(..25) {
-            Some(t) => *t,
-            None => b"asd"
-        };
-
-        let ts_str = std::str::from_utf8(l_part).unwrap_or("a");
-
-        let line_ts = match DateTime::parse_from_str(ts_str, "%Y-%m-%dT%H:%M:%S%:z") {
-                Ok(res) => Some(res.naive_utc()),
-                Err(_) => None,
-            };
+        let line_ts = ts_extract(&l);
+    
         //Set the minimum timestamp to the first valid timestamp in the file
         if min_ts == DateTime::<Utc>::MIN_UTC.naive_utc() {
             min_ts = line_ts.unwrap_or(DateTime::<Utc>::MIN_UTC.naive_utc());
+        } else {
+            break
         }
-        //if line_ts.is_some() {
-            //min_ts = std::cmp::max(line_ts.u)
-        //}
-        
-
-        // let min_ts = match line_ts {
-        //     Some(t) => {
-        //         if min_ts == DateTime::<Utc>::MIN_UTC.naive_utc(){
-        //             min_ts = t;
-        //             break
-        //         }
-        //     },
-        //     None => 
-            
-        // }
+    
     }
 
     let mut boundary = Boundary {
@@ -258,39 +205,14 @@ fn dateparser(lines: &mut std::slice::Iter<u8>, filebase: &str, begin: &str, end
         upper: min_ts + Duration::seconds(granularity * 60)
     };
 
-    println!("{:?}", boundary);
-
     while let Some(b) = lines.next() {
         
         let filename = format!("{filebase}{}.out", boundary.upper.format("%Y%m%d%H%M%S"));
         let mut l: Vec<u8> = vec![*b];
         //getting an entire line
-        loop {
-            match lines.next() {
-            Some(&10) => {l.extend_from_slice(&[10]);
-                        break},
-            Some(s) => {
-                l.extend_from_slice(&[*s]);
-            },
-            _ => {
-                break},
-            };
-        }
+        l.extend_from_slice(&lineloop(lines));
 
-        let l_part = match &l.get(..25) {
-            Some(t) => *t,
-            None => b"asd"
-        };
-
-        let ts_str = std::str::from_utf8(l_part).unwrap_or("a");
-
-        let line_ts = match DateTime::parse_from_str(ts_str, "%Y-%m-%dT%H:%M:%S%:z") {
-                Ok(res) => Some(res.naive_utc()),
-                Err(_) => None,
-            };
-        
-        //2023-04-03T16:10:17+00:00
-        //2023-04-03T17:20:12+00:00
+        let line_ts = ts_extract(&l);
         match line_ts {
             None => content.append(&mut l),
             Some(ts) => {
@@ -308,6 +230,8 @@ fn dateparser(lines: &mut std::slice::Iter<u8>, filebase: &str, begin: &str, end
                     filewriter(filename.as_str(), &content).expect("Error while writing to files");
                     content.clear();
                     break;
+                } else if ts < boundary.lower {
+                    content.clear();
                 }
             }
         }
@@ -317,6 +241,37 @@ fn dateparser(lines: &mut std::slice::Iter<u8>, filebase: &str, begin: &str, end
         filewriter(filename.as_str(), &content).expect("Error while writing to files");
     };
 
+}
+
+fn lineloop (lines: &mut std::slice::Iter<u8>) -> Vec<u8> {
+    let mut l: Vec<u8> = vec![];
+    loop {
+        match lines.next() {
+        Some(&10) => {l.extend_from_slice(&[10]);
+                    break},
+        Some(s) => {
+            l.extend_from_slice(&[*s]);
+        },
+        _ => {
+            break},
+        };
+    }
+    l.to_vec()
+}
+
+fn ts_extract (l: &[u8]) -> Option<NaiveDateTime> {
+    
+    let l_part = match &l.get(..25) {
+        Some(t) => *t,
+        None => b"asd"
+    };
+
+    let ts_str = std::str::from_utf8(l_part).unwrap_or("a");
+
+    match DateTime::parse_from_str(ts_str, "%Y-%m-%dT%H:%M:%S%:z") {
+            Ok(res) => Some(res.naive_utc()),
+            Err(_) => None,
+        }
 }
 
 fn filewriter (f: &str, c: &[u8]) -> Result<(), String>{
